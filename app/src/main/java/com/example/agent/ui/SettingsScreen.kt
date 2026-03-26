@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.agent.CredentialStore
+import com.example.agent.QrPairScanner
 import com.example.agent.RemoteViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -31,6 +32,7 @@ fun SettingsScreen(
     val agentOnline by vm.agentOnline.collectAsState()
 
     var showLogoutDialog by remember { mutableStateOf(false) }
+    var showScanner by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -74,6 +76,18 @@ fun SettingsScreen(
                     value = savedUrl,
                     icon  = Icons.Default.Link
                 )
+            }
+
+            SettingsSection(title = "Devices") {
+
+                Button(
+                    onClick = { showScanner = true },
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp)
+                        .fillMaxWidth()
+                ) {
+                    Text("Pair new device")
+                }
             }
 
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -167,6 +181,32 @@ fun SettingsScreen(
                 TextButton(onClick = { showLogoutDialog = false }) {
                     Text("Cancel")
                 }
+            }
+        )
+    }
+    if (showScanner) {
+        QrPairScanner(
+            onClose = { showScanner = false },
+            onScanned = { pairToken ->
+                vm.pairViaQr(
+                    pairToken = pairToken,
+                    context = context,
+                    onSuccess = { agentDeviceToken ->
+                        showScanner = false
+
+                        val saved = CredentialStore.load(context)
+                        if (saved != null) {
+                            val (serverUrl, jwt, _) = saved
+
+                            vm.setDeviceId(agentDeviceToken)
+                            vm.connect(serverUrl, jwt)
+                        }
+                    },
+                    onError = {
+                        showScanner = false
+                        // optionally show error
+                    }
+                )
             }
         )
     }

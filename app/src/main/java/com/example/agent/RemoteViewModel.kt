@@ -1,6 +1,7 @@
 // app/src/main/java/com/example/agent/RemoteViewModel.kt
 package com.example.agent
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
@@ -22,50 +23,49 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
-
 class RemoteViewModel : ViewModel() {
 
-    // ── Exposed state ──────────────────────────────────────────────────────
+    // ── Exposed state ──────────────────────────────────────────────────────────
 
-    private val _frameBitmap = MutableStateFlow<Bitmap?>(null)
+    private val _frameBitmap      = MutableStateFlow<Bitmap?>(null)
     val frameBitmap: StateFlow<Bitmap?> = _frameBitmap.asStateFlow()
 
-    private val _chatMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    private val _chatMessages     = MutableStateFlow<List<ChatMessage>>(emptyList())
     val chatMessages: StateFlow<List<ChatMessage>> = _chatMessages.asStateFlow()
 
-    private val _connectionState = MutableStateFlow(ConnState.DISCONNECTED)
+    private val _connectionState  = MutableStateFlow(ConnState.DISCONNECTED)
     val connectionState: StateFlow<ConnState> = _connectionState.asStateFlow()
 
-    private val _agentOnline = MutableStateFlow(false)
+    private val _agentOnline      = MutableStateFlow(false)
     val agentOnline: StateFlow<Boolean> = _agentOnline.asStateFlow()
 
-    private val _isAiRunning = MutableStateFlow(false)
+    private val _isAiRunning      = MutableStateFlow(false)
     val isAiRunning: StateFlow<Boolean> = _isAiRunning.asStateFlow()
 
-    // ── Internal state ─────────────────────────────────────────────────────
+    // ── Internal state ─────────────────────────────────────────────────────────
 
     private val client = OkHttpClient.Builder()
         .pingInterval(30, TimeUnit.SECONDS)
         .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.SECONDS)   // no timeout for WebSocket reads
+        .readTimeout(0, TimeUnit.SECONDS)
         .build()
 
     private var ws:           WebSocket? = null
     private var serverUrl:    String     = ""
     private var token:        String     = ""
     private var deviceId:     String     = ""
-    private var retryDelay:   Long       = 1_000L   // ms, doubles on each failure
+    private var retryDelay:   Long       = 1_000L
     private var shouldRetry:  Boolean    = false
     private var reconnectJob: Job?       = null
 
-    // ── Login ─────────────────────────────────────────────────────────────
+    // ── Login ──────────────────────────────────────────────────────────────────
 
     fun login(
         httpBaseUrl: String,
         username:    String,
         password:    String,
         onSuccess:   (AuthResult) -> Unit,
-        onError:     (message: String) -> Unit
+        onError:     (String) -> Unit
     ) {
         _connectionState.value = ConnState.CONNECTING
         viewModelScope.launch(Dispatchers.IO) {
@@ -81,26 +81,16 @@ class RemoteViewModel : ViewModel() {
                 ).execute()
                 val respBody = response.body?.string() ?: ""
                 if (response.isSuccessful) {
-                    val json = JSONObject(respBody)
-                    val jwt = json.getString("token")
-                    val deviceId = json.getString("deviceId")   // 👈 ADD THIS
-
+                    val json        = JSONObject(respBody)
+                    val jwt         = json.getString("token")
+                    val deviceId    = json.getString("deviceId")
+                    val deviceToken = json.optString("deviceToken", "")
                     withContext(Dispatchers.Main) {
-                        val jwt         = json.getString("token")
-                        val deviceId    = json.getString("deviceId")
-                        val deviceToken = json.getString("deviceToken")
-
-                        onSuccess(
-                            AuthResult(
-                                jwt = jwt,
-                                deviceId = deviceId,
-                                deviceToken = json.optString("deviceToken", null)
-                            )
-                        )   // quick way to pass both
+                        onSuccess(AuthResult(jwt = jwt, deviceId = deviceId, deviceToken = deviceToken))
                     }
                 } else {
-                    val msg = try { JSONObject(respBody).optString("error","Login failed") }
-                    catch (e: Exception) { "Login failed (${response.code})" }
+                    val msg = runCatching { JSONObject(respBody).optString("error","Login failed") }
+                        .getOrDefault("Login failed (${response.code})")
                     _connectionState.value = ConnState.DISCONNECTED
                     withContext(Dispatchers.Main) { onError(msg) }
                 }
@@ -111,14 +101,14 @@ class RemoteViewModel : ViewModel() {
         }
     }
 
-    // ── Register ──────────────────────────────────────────────────────────
+    // ── Register ───────────────────────────────────────────────────────────────
 
     fun register(
         httpBaseUrl: String,
         username:    String,
         password:    String,
         onSuccess:   (AuthResult) -> Unit,
-        onError:     (message: String) -> Unit
+        onError:     (String) -> Unit
     ) {
         _connectionState.value = ConnState.CONNECTING
         viewModelScope.launch(Dispatchers.IO) {
@@ -134,13 +124,13 @@ class RemoteViewModel : ViewModel() {
                 ).execute()
                 val respBody = response.body?.string() ?: ""
                 if (response.isSuccessful) {
-                    // Auto-login after register to get JWT
+                    // Auto-login after successful registration
                     withContext(Dispatchers.Main) {
                         login(httpBaseUrl, username, password, onSuccess, onError)
                     }
                 } else {
-                    val msg = try { JSONObject(respBody).optString("error","Registration failed") }
-                    catch (e: Exception) { "Registration failed (${response.code})" }
+                    val msg = runCatching { JSONObject(respBody).optString("error","Registration failed") }
+                        .getOrDefault("Registration failed (${response.code})")
                     _connectionState.value = ConnState.DISCONNECTED
                     withContext(Dispatchers.Main) { onError(msg) }
                 }
@@ -151,37 +141,68 @@ class RemoteViewModel : ViewModel() {
         }
     }
 
-    fun setDeviceId(id: String) {
-        deviceId = id
-    }
+    fun setDeviceId(id: String) { deviceId = id }
 
-    // ── QR login — phone scanned QR, exchange token for JWT ──────────────
-
-    fun connectViaQr(
-        serverUrl: String,
-        qrToken:   String,
-        context:   android.content.Context,
-        onSuccess: (jwt: String) -> Unit,
-        onError:   (message: String) -> Unit
-    ) {
-        // Check if we have saved credentials to auto-login with
-        val saved = com.example.agent.CredentialStore.load(context)
-        Log.d("QR_DEBUG", "Using saved deviceId=$deviceId")
-        if (saved != null) {
-            // We have a saved JWT — just reuse it directly
-            val (url, jwt, deviceId) = saved
-            Log.d("WS_DEBUG", "deviceId BEFORE connect = '$deviceId'")
-            setDeviceId(deviceId)
-            Log.d("WS_DEBUG", "deviceId after setDeviceId = '$deviceId'")
-            onSuccess(jwt)
+    // ── QR pairing ─────────────────────────────────────────────────────────────
+    //
+    // Called when the phone has scanned a QR code.
+    //
+    // New flow:
+    //   1. Phone must already be authenticated (JWT stored in CredentialStore).
+    //   2. QR payload contains { url, pair_token } — no device token, no secret.
+    //   3. Phone sends POST /api/pair  { pairToken }  with its own JWT.
+    //   4. Server returns { agentDeviceToken } which the phone uses to open WebSocket.
+    //
+    // If the phone is NOT yet logged in, onError is called with a clear message
+    // so the UI can redirect to the Login tab.
+    //
+    fun pairViaQr(
+        pairToken: String,
+        context: Context,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit
+    ){
+        // Must be authenticated first
+        val saved = CredentialStore.load(context)
+        if (saved == null) {
+            onError("Please log in first")
             return
         }
 
-        // No saved credentials — ask user to login first via manual tab
-        onError("Please login manually first, then QR scan will work automatically")
+        val (serverUrl, jwt, _) = saved
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val url = "$serverUrl/api/pair"
+                val body = JSONObject()
+                    .put("pairToken", pairToken)
+                    .toString()
+                    .toRequestBody("application/json".toMediaType())
+                val response = client.newCall(
+                    Request.Builder()
+                        .url(url)
+                        .addHeader("Authorization", "Bearer $jwt")
+                        .post(body)
+                        .build()
+                ).execute()
+                val respBody = response.body?.string() ?: ""
+                if (response.isSuccessful) {
+                    val json             = JSONObject(respBody)
+                    val agentDeviceToken = json.getString("agentDeviceToken")
+                    Log.d("QR_PAIR", "Paired! agentDeviceToken=$agentDeviceToken")
+                    withContext(Dispatchers.Main) { onSuccess(agentDeviceToken) }
+                } else {
+                    val msg = runCatching { JSONObject(respBody).optString("error","Pairing failed") }
+                        .getOrDefault("Pairing failed (${response.code})")
+                    withContext(Dispatchers.Main) { onError(msg) }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { onError("Cannot reach server: ${e.message}") }
+            }
+        }
     }
 
-    // ── WebSocket connection ───────────────────────────────────────────────
+    // ── WebSocket connection ───────────────────────────────────────────────────
 
     fun connect(wsUrl: String, jwtToken: String) {
         serverUrl   = wsUrl.trimEnd('/')
@@ -193,53 +214,32 @@ class RemoteViewModel : ViewModel() {
             Log.e("WS_DEBUG", "❌ deviceId is EMPTY — aborting connect")
             return
         }
-
         doConnect()
     }
 
     private fun doConnect() {
         _connectionState.value = ConnState.CONNECTING
-
-
         val url = "$serverUrl/phone?token=$token&deviceId=$deviceId"
         Log.d("WS_DEBUG", "🌐 Connecting to: $url")
-        val request = Request.Builder().url(url).build()
 
-        ws = client.newWebSocket(request, object : WebSocketListener() {
+        ws = client.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d("WS_DEBUG", "✅ WebSocket OPENED")
-                retryDelay = 1_000L   // reset backoff on success
+                retryDelay             = 1_000L
                 _connectionState.value = ConnState.CONNECTED
             }
 
-            // Binary frame = JPEG screen capture from agent
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString){
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 val arr = bytes.toByteArray()
-
-                Log.d("WS_DEBUG", "📦 First bytes: ${arr.take(10)}")
-                Log.d("WS_DEBUG", "📦 Frame size=${arr.size}")
-
-                val bmp = BitmapFactory.decodeByteArray(arr, 0, arr.size)
-
-                if (bmp == null) {
-                    Log.e("WS", "❌ FAILED TO DECODE FRAME")
-                } else {
-                    Log.d("WS", "✅ Frame decoded: ${bmp.width}x${bmp.height}")
-                    _frameBitmap.value = bmp
-                }
+                BitmapFactory.decodeByteArray(arr, 0, arr.size)?.let { _frameBitmap.value = it }
             }
 
-            // Text frame = JSON message (chat, status, agent state)
             override fun onMessage(webSocket: WebSocket, text: String) {
                 handleJsonMessage(text)
             }
 
-            override fun onFailure(
-                webSocket: WebSocket,
-                t: Throwable,
-                response: Response?
-            ) {
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e("WS_DEBUG", "❌ WebSocket FAILURE: ${t.message}")
                 _connectionState.value = ConnState.RECONNECTING
                 _agentOnline.value     = false
@@ -266,86 +266,66 @@ class RemoteViewModel : ViewModel() {
     }
 
     fun disconnect() {
-        shouldRetry = false
+        shouldRetry            = false
         reconnectJob?.cancel()
         ws?.close(1000, "User disconnected")
-        ws = null
+        ws                     = null
         _connectionState.value = ConnState.DISCONNECTED
         _agentOnline.value     = false
         _isAiRunning.value     = false
     }
 
-    // ── Incoming message handler ───────────────────────────────────────────
+    // ── Incoming message handler ───────────────────────────────────────────────
 
     private fun handleJsonMessage(text: String) {
         try {
             val json = JSONObject(text)
             when (json.getString("type")) {
-
-                "ai_msg" -> {
+                "ai_msg"       -> {
                     _isAiRunning.value = true
-                    addMessage(ChatMessage(
-                        role = ChatMessage.Role.ASSISTANT,
-                        text = json.getString("text")
-                    ))
+                    addMessage(ChatMessage(role = ChatMessage.Role.ASSISTANT,
+                        text = json.getString("text")))
                 }
-
-                "ai_action" -> {
-                    val action = json.optString("action", "")
-                    val params = json.optJSONObject("params")?.toString() ?: ""
+                "ai_action"    -> {
                     addMessage(ChatMessage(
                         role = ChatMessage.Role.ACTION,
-                        text = "$action $params"
+                        text = "${json.optString("action","")} ${json.optJSONObject("params") ?: ""}"
                     ))
                 }
-
-                "ai_done" -> {
+                "ai_done"      -> {
                     _isAiRunning.value = false
-                    addMessage(ChatMessage(
-                        role = ChatMessage.Role.DONE,
-                        text = "✓ ${json.optString("summary", "Task complete")}"
-                    ))
+                    addMessage(ChatMessage(role = ChatMessage.Role.DONE,
+                        text = "✓ ${json.optString("summary","Task complete")}"))
                 }
-
-                "agent_status" -> {
-                    _agentOnline.value = json.optBoolean("online", false)
-                }
-
-                "error" -> {
+                "agent_status" -> _agentOnline.value = json.optBoolean("online", false)
+                "error"        -> {
                     _isAiRunning.value = false
-                    addMessage(ChatMessage(
-                        role = ChatMessage.Role.ERROR,
-                        text = json.optString("text", "Unknown error")
-                    ))
+                    addMessage(ChatMessage(role = ChatMessage.Role.ERROR,
+                        text = json.optString("text","Unknown error")))
                 }
             }
-        } catch (e: Exception) {
-            // Ignore malformed messages
-        }
+        } catch (_: Exception) { /* ignore malformed messages */ }
     }
 
-    // ── Outgoing messages ──────────────────────────────────────────────────
+    // ── Outgoing messages ──────────────────────────────────────────────────────
 
     fun sendGoal(text: String) {
         ws?.send("""{"type":"user_msg","text":${JSONObject.quote(text)}}""")
         addMessage(ChatMessage(role = ChatMessage.Role.USER, text = text))
     }
 
-    fun sendTap(relX: Float, relY: Float) {
+
+    fun sendTap(relX: Float, relY: Float) =
         ws?.send("""{"type":"manual","action":"click","relX":$relX,"relY":$relY}""")
-    }
 
-    fun sendDoubleTap(relX: Float, relY: Float) {
+    fun sendDoubleTap(relX: Float, relY: Float) =
         ws?.send("""{"type":"manual","action":"click","relX":$relX,"relY":$relY,"clicks":2}""")
-    }
 
-    fun sendRightClick(relX: Float, relY: Float) {
+    fun sendRightClick(relX: Float, relY: Float) =
         ws?.send("""{"type":"manual","action":"click","relX":$relX,"relY":$relY,"button":"right"}""")
-    }
 
-    fun sendScroll(relX: Float, relY: Float, direction: String) {
+    fun sendScroll(relX: Float, relY: Float, direction: String) =
         ws?.send("""{"type":"manual","action":"scroll","relX":$relX,"relY":$relY,"direction":"$direction"}""")
-    }
 
     fun sendShortcut(keys: List<String>) {
         val keysJson = keys.joinToString(",") { "\"$it\"" }
@@ -355,13 +335,10 @@ class RemoteViewModel : ViewModel() {
     fun stopAiTask() {
         ws?.send("""{"type":"stop_ai"}""")
         _isAiRunning.value = false
-        addMessage(ChatMessage(
-            role = ChatMessage.Role.ERROR,
-            text = "Task stopped by user"
-        ))
+        addMessage(ChatMessage(role = ChatMessage.Role.ERROR, text = "Task stopped by user"))
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────
+    // ── Helpers ────────────────────────────────────────────────────────────────
 
     private fun addMessage(message: ChatMessage) {
         _chatMessages.value += message
