@@ -7,7 +7,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
 object CredentialStore {
-
+    private const val PREFS = "agent_prefs"
     private const val PREFS_FILE = "agent_credentials"
     private const val KEY_URL    = "server_url"
     private const val KEY_TOKEN  = "jwt_token"
@@ -53,4 +53,22 @@ object CredentialStore {
     /** Clear all saved credentials (on logout). */
     fun clear(ctx: Context) =
         prefs(ctx).edit().clear().apply()
+
+    fun saveAi(context: Context, provider: String, apiKey: String) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putString("ai_provider", provider)
+            .putString("ai_key", apiKey)
+            .apply()
+    }
+
+    fun getAi(context: Context): AiConfig? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val provider = prefs.getString("ai_provider", null)
+        val key = prefs.getString("ai_key", null)
+        if (provider != null && key != null) {
+            return AiConfig(provider, key)
+        }
+        return null
+    }
 }

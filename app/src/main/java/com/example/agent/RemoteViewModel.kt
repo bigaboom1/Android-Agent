@@ -309,8 +309,20 @@ class RemoteViewModel : ViewModel() {
 
     // ── Outgoing messages ──────────────────────────────────────────────────────
 
-    fun sendGoal(text: String) {
-        ws?.send("""{"type":"user_msg","text":${JSONObject.quote(text)}}""")
+    fun sendGoal(context: Context, text: String) {
+        val ai = CredentialStore.getAi(context)
+
+        val json = JSONObject().apply {
+            put("type", "user_msg")
+            put("text", text)
+
+            ai?.let {
+                put("ai_provider", it.provider)
+                put("ai_key", it.apiKey)
+            }
+        }
+
+        ws?.send(json.toString())
         addMessage(ChatMessage(role = ChatMessage.Role.USER, text = text))
     }
 

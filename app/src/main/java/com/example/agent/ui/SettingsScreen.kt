@@ -247,3 +247,33 @@ fun StatusRow(
         modifier = Modifier.padding(horizontal = 4.dp)
     )
 }
+
+@Composable
+fun AiSettings() {
+    val context = LocalContext.current
+
+    var provider by remember { mutableStateOf("openai") }
+    var apiKey by remember { mutableStateOf("") }
+
+    Column {
+        Text("AI Provider")
+
+        OutlinedTextField(
+            value = provider,
+            onValueChange = { provider = it },
+            label = { Text("Provider (openai)") }
+        )
+
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            label = { Text("API Key") }
+        )
+
+        Button(onClick = {
+            CredentialStore.saveAi(context, provider, apiKey)
+        }) {
+            Text("Save AI Settings")
+        }
+    }
+}

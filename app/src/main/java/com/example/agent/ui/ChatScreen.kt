@@ -18,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
@@ -33,6 +34,7 @@ fun ChatScreen(
     onBack: () -> Unit,
     vm: RemoteViewModel = viewModel()
 ) {
+    val context = LocalContext.current
     val messages   by vm.chatMessages.collectAsState()
     val isRunning  by vm.isAiRunning.collectAsState()
     val listState   = rememberLazyListState()
@@ -81,14 +83,14 @@ fun ChatScreen(
                 onSend = {
                     val goal = inputText.trim()
                     if (goal.isNotBlank()) {
-                        vm.sendGoal(goal)
+                        vm.sendGoal(context ,goal)
                         inputText = ""
                         focusManager.clearFocus()
                     }
                 },
                 onVoiceResult = { transcript ->
                     if (transcript.isNotBlank()) {
-                        vm.sendGoal(transcript)
+                        vm.sendGoal(context,transcript)
                     }
                 }
             )
