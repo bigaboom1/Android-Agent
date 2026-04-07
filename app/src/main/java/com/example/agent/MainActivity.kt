@@ -27,14 +27,17 @@ class MainActivity : ComponentActivity() {
                 val vm: RemoteViewModel = viewModel()
 
                 // Check if credentials are already saved
-                val savedCreds = remember {
-                    CredentialStore.load(applicationContext)
-                }
+                val savedCreds = CredentialStore.load(applicationContext)
 
                 // Auto-connect if credentials exist
                 LaunchedEffect(Unit) {
-                    savedCreds?.let { (url, token) ->
-                        vm.connect(url, token)
+                    savedCreds?.let { (url, token, deviceId, deviceToken) ->
+
+                        val wsUrl = url
+                            .replace("http://", "ws://")
+                            .replace("https://", "wss://")
+
+                        vm.connect(wsUrl, token, deviceId)   // ✅ FIX
                     }
                 }
 
@@ -70,6 +73,7 @@ class MainActivity : ComponentActivity() {
 
                     composable("settings") {
                         SettingsScreen(
+                            navController = navController,   // ✅ ADD THIS
                             onBack = { navController.popBackStack() },
                             onLogout = {
                                 CredentialStore.clear(applicationContext)

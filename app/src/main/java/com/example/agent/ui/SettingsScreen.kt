@@ -9,6 +9,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.navigation.NavController
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -23,6 +24,7 @@ import com.example.agent.RemoteViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
+    navController: NavController,
     onBack:   () -> Unit,
     onLogout: () -> Unit,
     vm: RemoteViewModel = viewModel()
@@ -69,7 +71,7 @@ fun SettingsScreen(
 
                 // Saved server URL
                 val savedUrl = remember {
-                    CredentialStore.load(context)?.first ?: "Not saved"
+                    CredentialStore.load(context)?.let { (url, _, _, _) -> url } ?: "Not saved"
                 }
                 StatusRow(
                     label = "Server URL",
@@ -188,23 +190,29 @@ fun SettingsScreen(
         QrPairScanner(
             onClose = { showScanner = false },
             onScanned = { pairToken ->
-                vm.pairViaQr(
-                    pairToken = pairToken,
-                    context = context,
+                vm.pairViaQr(pairToken, context,
                     onSuccess = { agentDeviceToken ->
-                        showScanner = false
 
                         val saved = CredentialStore.load(context)
-                        if (saved != null) {
-                            val (serverUrl, jwt, _) = saved
+                        if (saved == null) return@pairViaQr
 
-                            vm.setDeviceId(agentDeviceToken)
-                            vm.connect(serverUrl, jwt)
+                        val (serverUrl, jwt, deviceId, _) = saved
+
+                        CredentialStore.save(context, serverUrl, jwt, deviceId, agentDeviceToken)
+
+                        val wsUrl = serverUrl
+                            .replace("http://", "ws://")
+                            .replace("https://", "wss://")
+
+                        vm.connect(wsUrl, jwt, deviceId)
+
+                        // 🔥 NAVIGATE TO REMOTE SCREEN
+                        navController.navigate("remote") {
+                            popUpTo("login") { inclusive = true }
                         }
                     },
-                    onError = {
-                        showScanner = false
-                        // optionally show error
+                    onError = { err ->
+                        // show error
                     }
                 )
             }

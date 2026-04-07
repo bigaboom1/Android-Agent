@@ -29,21 +29,24 @@ object CredentialStore {
     }
 
     /** Save server URL and JWT token to encrypted storage. */
-    fun save(ctx: Context, url: String, token: String, deviceId: String) {
+    fun save(ctx: Context, url: String, token: String, deviceId: String, deviceToken: String?) {
         prefs(ctx).edit()
-            .putString(KEY_URL,   url)
+            .putString(KEY_URL, url)
             .putString(KEY_TOKEN, token)
             .putString(KEY_DEVICE, deviceId)
+            .putString(KEY_DEVICE_TOKEN, deviceToken)
             .apply()
     }
 
     /** Load saved credentials. Returns null if nothing saved yet.  */
-    fun load(ctx: Context): Triple<String, String, String>? {
-        val p        = prefs(ctx)
-        val url      = p.getString(KEY_URL, null) ?: return null
-        val token    = p.getString(KEY_TOKEN, null) ?: return null
+    fun load(ctx: Context): Credentials? {
+        val p = prefs(ctx)
+        val url = p.getString(KEY_URL, null) ?: return null
+        val token = p.getString(KEY_TOKEN, null) ?: return null
         val deviceId = p.getString(KEY_DEVICE, null) ?: return null
-        return Triple(url, token, deviceId)
+        val deviceToken = p.getString(KEY_DEVICE_TOKEN, null) ?: return null
+
+        return Credentials(url, token, deviceId, deviceToken)
     }
 
     /** Check if credentials exist without loading them. */

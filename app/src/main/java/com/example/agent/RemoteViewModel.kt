@@ -3,15 +3,12 @@ package com.example.agent
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.agent.model.ChatMessage
 import com.example.agent.model.ConnState
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,10 +17,17 @@ import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import okio.ByteString
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 class RemoteViewModel : ViewModel() {
+
+
+    private val wsManager = WebSocketManager(
+        onFrame = { _frameBitmap.value = it },
+        onMessage = { handleJsonMessage(it) },
+        onState = { _connectionState.value = it }
+    )
 
     // ── Exposed state ──────────────────────────────────────────────────────────
 
@@ -43,20 +47,13 @@ class RemoteViewModel : ViewModel() {
     val isAiRunning: StateFlow<Boolean> = _isAiRunning.asStateFlow()
 
     // ── Internal state ─────────────────────────────────────────────────────────
+    private var deviceId:     String     = ""
 
     private val client = OkHttpClient.Builder()
         .pingInterval(30, TimeUnit.SECONDS)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
         .build()
-
-    private var ws:           WebSocket? = null
-    private var serverUrl:    String     = ""
-    private var token:        String     = ""
-    private var deviceId:     String     = ""
-    private var retryDelay:   Long       = 1_000L
-    private var shouldRetry:  Boolean    = false
-    private var reconnectJob: Job?       = null
 
     // ── Login ──────────────────────────────────────────────────────────────────
 
@@ -169,7 +166,7 @@ class RemoteViewModel : ViewModel() {
             return
         }
 
-        val (serverUrl, jwt, _) = saved
+        val (serverUrl, jwt, _, _) = saved
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -204,107 +201,51 @@ class RemoteViewModel : ViewModel() {
 
     // ── WebSocket connection ───────────────────────────────────────────────────
 
-    fun connect(wsUrl: String, jwtToken: String) {
-        serverUrl   = wsUrl.trimEnd('/')
-        token       = jwtToken
-        shouldRetry = true
-        retryDelay  = 1_000L
-
-        if (deviceId.isBlank()) {
-            Log.e("WS_DEBUG", "❌ deviceId is EMPTY — aborting connect")
-            return
-        }
-        doConnect()
-    }
-
-    private fun doConnect() {
-        _connectionState.value = ConnState.CONNECTING
-        val url = "$serverUrl/phone?token=$token&deviceId=$deviceId"
-        Log.d("WS_DEBUG", "🌐 Connecting to: $url")
-
-        ws = client.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
-
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d("WS_DEBUG", "✅ WebSocket OPENED")
-                retryDelay             = 1_000L
-                _connectionState.value = ConnState.CONNECTED
-            }
-
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                val arr = bytes.toByteArray()
-                BitmapFactory.decodeByteArray(arr, 0, arr.size)?.let { _frameBitmap.value = it }
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleJsonMessage(text)
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e("WS_DEBUG", "❌ WebSocket FAILURE: ${t.message}")
-                _connectionState.value = ConnState.RECONNECTING
-                _agentOnline.value     = false
-                scheduleReconnect()
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d("WS_DEBUG", "🔌 WebSocket CLOSED: $reason")
-                _connectionState.value = ConnState.DISCONNECTED
-                _agentOnline.value     = false
-                if (shouldRetry) scheduleReconnect()
-            }
-        })
-    }
-
-    private fun scheduleReconnect() {
-        if (!shouldRetry) return
-        reconnectJob?.cancel()
-        reconnectJob = viewModelScope.launch {
-            delay(retryDelay)
-            retryDelay = (retryDelay * 2).coerceAtMost(30_000L)
-            if (shouldRetry) doConnect()
-        }
+    fun connect(wsUrl: String, jwtToken: String, deviceId: String) {
+        wsManager.connect(wsUrl, jwtToken, deviceId)
     }
 
     fun disconnect() {
-        shouldRetry            = false
-        reconnectJob?.cancel()
-        ws?.close(1000, "User disconnected")
-        ws                     = null
-        _connectionState.value = ConnState.DISCONNECTED
-        _agentOnline.value     = false
-        _isAiRunning.value     = false
+        wsManager.disconnect()
     }
 
     // ── Incoming message handler ───────────────────────────────────────────────
 
-    private fun handleJsonMessage(text: String) {
+    private fun handleJsonMessage(json: JSONObject) {
         try {
-            val json = JSONObject(text)
             when (json.getString("type")) {
-                "ai_msg"       -> {
+                "ai_msg" -> {
                     _isAiRunning.value = true
-                    addMessage(ChatMessage(role = ChatMessage.Role.ASSISTANT,
-                        text = json.getString("text")))
+                    addMessage(ChatMessage(
+                        role = ChatMessage.Role.ASSISTANT,
+                        text = json.getString("text")
+                    ))
                 }
-                "ai_action"    -> {
+                "ai_action" -> {
                     addMessage(ChatMessage(
                         role = ChatMessage.Role.ACTION,
                         text = "${json.optString("action","")} ${json.optJSONObject("params") ?: ""}"
                     ))
                 }
-                "ai_done"      -> {
+                "ai_done" -> {
                     _isAiRunning.value = false
-                    addMessage(ChatMessage(role = ChatMessage.Role.DONE,
-                        text = "✓ ${json.optString("summary","Task complete")}"))
+                    addMessage(ChatMessage(
+                        role = ChatMessage.Role.DONE,
+                        text = "✓ ${json.optString("summary","Task complete")}"
+                    ))
                 }
-                "agent_status" -> _agentOnline.value = json.optBoolean("online", false)
-                "error"        -> {
+                "agent_status" -> {
+                    _agentOnline.value = json.optBoolean("online", false)
+                }
+                "error" -> {
                     _isAiRunning.value = false
-                    addMessage(ChatMessage(role = ChatMessage.Role.ERROR,
-                        text = json.optString("text","Unknown error")))
+                    addMessage(ChatMessage(
+                        role = ChatMessage.Role.ERROR,
+                        text = json.optString("text","Unknown error")
+                    ))
                 }
             }
-        } catch (_: Exception) { /* ignore malformed messages */ }
+        } catch (_: Exception) { }
     }
 
     // ── Outgoing messages ──────────────────────────────────────────────────────
@@ -322,30 +263,107 @@ class RemoteViewModel : ViewModel() {
             }
         }
 
-        ws?.send(json.toString())
+        wsManager.sendRaw(json)
         addMessage(ChatMessage(role = ChatMessage.Role.USER, text = text))
     }
 
 
-    fun sendTap(relX: Float, relY: Float) =
-        ws?.send("""{"type":"manual","action":"click","relX":$relX,"relY":$relY}""")
-
-    fun sendDoubleTap(relX: Float, relY: Float) =
-        ws?.send("""{"type":"manual","action":"click","relX":$relX,"relY":$relY,"clicks":2}""")
-
-    fun sendRightClick(relX: Float, relY: Float) =
-        ws?.send("""{"type":"manual","action":"click","relX":$relX,"relY":$relY,"button":"right"}""")
-
-    fun sendScroll(relX: Float, relY: Float, direction: String) =
-        ws?.send("""{"type":"manual","action":"scroll","relX":$relX,"relY":$relY,"direction":"$direction"}""")
-
-    fun sendShortcut(keys: List<String>) {
-        val keysJson = keys.joinToString(",") { "\"$it\"" }
-        ws?.send("""{"type":"manual","action":"key","keys":[$keysJson]}""")
+    fun sendTap(relX: Float, relY: Float) {
+        val action = JSONObject().apply {
+            put("action", "click")
+            put("relX", relX)
+            put("relY", relY)
+        }
+        wsManager.sendAction(action)
     }
 
+    fun sendDoubleTap(relX: Float, relY: Float) {
+        val action = JSONObject().apply {
+            put("action", "click")
+            put("clicks", 2)
+            put("relX", relX)
+            put("relY", relY)
+        }
+        wsManager.sendAction(action)
+    }
+
+    fun sendRightClick(relX: Float, relY: Float) {
+        val action = JSONObject().apply {
+            put("action", "click")
+            put("button", "right")
+            put("relX", relX)
+            put("relY", relY)
+        }
+        wsManager.sendAction(action)
+    }
+
+    fun sendScroll(relX: Float, relY: Float, direction: String) {
+        val action = JSONObject().apply {
+            put("action", "scroll")
+            put("relX", relX)
+            put("relY", relY)
+            put("direction", direction)
+        }
+
+        wsManager.sendAction(action)
+    }
+
+    fun sendText(text: String) {
+        val action = JSONObject().apply {
+            put("action", "type")
+            put("text", text)
+        }
+
+        wsManager.sendAction(action)
+    }
+
+    fun sendKey(key: String) {
+        val action = JSONObject().apply {
+            put("action", "key")
+            put("keys", JSONArray().put(key))
+        }
+
+        wsManager.sendAction(action)
+    }
+    fun sendShortcut(keys: List<String>) {
+        Log.d("WS_DEBUG", "Shortcut pressed: $keys")
+
+        val arr = JSONArray()
+        keys.forEach { arr.put(it.lowercase()) } // 🔥 important
+
+        val action = JSONObject().apply {
+            put("action", "key")
+            put("keys", arr)
+        }
+
+        wsManager.sendAction(action)
+    }
+
+    fun sendDrag(
+        startX: Float,
+        startY: Float,
+        endX: Float,
+        endY: Float,
+        screenWidth: Int,
+        screenHeight: Int
+    ) {
+        val action = JSONObject().apply {
+            put("action", "drag")
+            put("startX", (startX * screenWidth).toInt())
+            put("startY", (startY * screenHeight).toInt())
+            put("endX", (endX * screenWidth).toInt())
+            put("endY", (endY * screenHeight).toInt())
+        }
+
+        wsManager.sendAction(action)
+    }
     fun stopAiTask() {
-        ws?.send("""{"type":"stop_ai"}""")
+        val json = JSONObject().apply {
+            put("type", "stop_ai")
+        }
+
+        wsManager.sendRaw(json)
+
         _isAiRunning.value = false
         addMessage(ChatMessage(role = ChatMessage.Role.ERROR, text = "Task stopped by user"))
     }
@@ -358,9 +376,6 @@ class RemoteViewModel : ViewModel() {
 
     override fun onCleared() {
         super.onCleared()
-        shouldRetry = false
-        reconnectJob?.cancel()
-        ws?.close(1000, "ViewModel cleared")
-        client.dispatcher.executorService.shutdown()
+        wsManager.disconnect()
     }
 }

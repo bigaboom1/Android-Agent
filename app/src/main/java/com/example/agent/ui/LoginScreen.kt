@@ -51,6 +51,9 @@ import com.example.agent.CredentialStore
 import com.example.agent.RemoteViewModel
 import com.example.agent.model.ConnState
 
+const val server =  "http://10.50.56.213:3000"
+//const val server =  "http://10.0.7.44:3000"
+
 @Composable
 fun LoginScreen(
     onConnected: () -> Unit,
@@ -59,7 +62,7 @@ fun LoginScreen(
     val context    = LocalContext.current
     val connState by vm.connectionState.collectAsState()
 
-    // Tab: 0 = QR Pair (auth first), 1 = Manual login, 2 = Register
+    //  0 = Manual login, 1 = Register
     var tab        by remember { mutableIntStateOf(0) }
     var errorMsg   by remember { mutableStateOf<String?>(null) }
     var successMsg by remember { mutableStateOf<String?>(null) }
@@ -118,8 +121,8 @@ fun LoginScreen(
                             password    = pwd,
                             onSuccess   = { result ->
                                 vm.setDeviceId(result.deviceId)
-                                CredentialStore.save(context, httpUrl, result.jwt, result.deviceId)
-                                vm.connect(httpUrl, result.jwt)
+                                CredentialStore.save(context, httpUrl, result.jwt, result.deviceId, result.deviceToken)
+                                vm.connect(httpUrl, result.jwt, result.deviceId)
                             },
                             onError = { errorMsg = it }
                         )
@@ -142,9 +145,9 @@ fun LoginScreen(
                             password    = pwd,
                             onSuccess   = { result ->
                                 vm.setDeviceId(result.deviceId)
-                                CredentialStore.save(context, httpUrl, result.jwt, result.deviceId)
+                                CredentialStore.save(context, httpUrl, result.jwt, result.deviceId, result.deviceToken)
                                 successMsg = "Registered! Connecting…"
-                                vm.connect(httpUrl, result.jwt)
+                                vm.connect(httpUrl, result.jwt, result.deviceId)
                             },
                             onError = { errorMsg = it }
                         )
@@ -166,7 +169,10 @@ fun ManualLoginTab(
     onLogin:    (url: String, user: String, pwd: String) -> Unit
 ) {
     val focus = LocalFocusManager.current
-    val SERVER_URL = "http://10.50.56.161:3000"
+    //val SERVER_URL = "http://10.50.56.128:3000"
+    //val SERVER_URL = "http://10.50.56.65:3000"
+    //val SERVER_URL = "http://192.168.31.86:3000"
+    val SERVER_URL = server
     var url   by remember { mutableStateOf("ws://") }
     var user  by remember { mutableStateOf("") }
     var pwd   by remember { mutableStateOf("") }
@@ -194,7 +200,10 @@ fun RegisterTab(
     onRegister: (url: String, user: String, pwd: String) -> Unit
 ) {
     val focus = LocalFocusManager.current
-    val SERVER_URL = "http://10.50.56.161:3000"
+    //val SERVER_URL = "http://10.50.56.128:3000"
+    //val SERVER_URL = "http://10.50.56.65:3000"
+    //val SERVER_URL = "http://192.168.31.86:3000"
+    val SERVER_URL = server
     var url   by remember { mutableStateOf("ws://") }
     var user  by remember { mutableStateOf("") }
     var pwd   by remember { mutableStateOf("") }
