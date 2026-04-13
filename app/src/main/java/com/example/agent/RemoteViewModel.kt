@@ -212,6 +212,7 @@ class RemoteViewModel : ViewModel() {
     // ── Incoming message handler ───────────────────────────────────────────────
 
     private fun handleJsonMessage(json: JSONObject) {
+        Log.d("HANDLEJSNMSG",json.getString("type"))
         try {
             when (json.getString("type")) {
                 "ai_msg" -> {
@@ -233,11 +234,17 @@ class RemoteViewModel : ViewModel() {
                         role = ChatMessage.Role.DONE,
                         text = "✓ ${json.optString("summary","Task complete")}"
                     ))
+                    Log.d("ai_done","ai_done")
                 }
                 "agent_status" -> {
                     _agentOnline.value = json.optBoolean("online", false)
                 }
+                "phone_connected", "phone_disconnected" -> {
+                    // These are internal signals for the desktop agent only.
+                    // Phone can safely ignore them.
+                }
                 "error" -> {
+                    Log.d("ai_error","Error")
                     _isAiRunning.value = false
                     addMessage(ChatMessage(
                         role = ChatMessage.Role.ERROR,

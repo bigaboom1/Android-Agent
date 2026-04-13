@@ -17,11 +17,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,8 +44,9 @@ fun RemoteScreen(
     var scale  by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 
-    // Track where the image is actually drawn (letterbox rect)
-    var _lastImageRect by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
+    // Track where the image is actually drawn (letterbox rect) and current canvas size
+    var imageRect by remember { mutableStateOf(Rect.Zero) }
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -57,21 +58,22 @@ fun RemoteScreen(
                     detectTransformGestures { _, pan, zoom, _ ->
                         scale  = (scale * zoom).coerceIn(1f, 4f)
                         offset += pan
+                        // Optional: clamp offset to avoid extreme panning
+                        // We'll keep simple for now
                     }
                 }
-                .pointerInput(Unit) {
+                .pointerInput(scale, offset, imageRect, canvasSize) {
                     detectTapGestures(
                         onTap = { tapOffset ->
-                            // Convert tap to image-relative coords accounting for letterbox
-                            val (relX, relY) = tapToRelative(tapOffset, size, _lastImageRect)
+                            val (relX, relY) = screenToImageCoords(tapOffset, scale, offset, imageRect, canvasSize)
                             if (relX != null && relY != null) vm.sendTap(relX, relY)
                         },
                         onDoubleTap = { tapOffset ->
-                            val (relX, relY) = tapToRelative(tapOffset, size, _lastImageRect)
+                            val (relX, relY) = screenToImageCoords(tapOffset, scale, offset, imageRect, canvasSize)
                             if (relX != null && relY != null) vm.sendDoubleTap(relX, relY)
                         },
                         onLongPress = { tapOffset ->
-                            val (relX, relY) = tapToRelative(tapOffset, size, _lastImageRect)
+                            val (relX, relY) = screenToImageCoords(tapOffset, scale, offset, imageRect, canvasSize)
                             if (relX != null && relY != null) vm.sendRightClick(relX, relY)
                         }
                     )
@@ -97,11 +99,9 @@ fun RemoteScreen(
                 val drawW: Float
                 val drawH: Float
                 if (bmpAspect > canvasAspect) {
-                    // Image wider than canvas — fit width, bars on top/bottom
                     drawW = canvasW
                     drawH = canvasW / bmpAspect
                 } else {
-                    // Image taller than canvas — fit height, bars on left/right
                     drawH = canvasH
                     drawW = canvasH * bmpAspect
                 }
@@ -109,8 +109,9 @@ fun RemoteScreen(
                 val left = (canvasW - drawW) / 2f
                 val top  = (canvasH - drawH) / 2f
 
-                // Store rect so tap handler can use it
-                _lastImageRect = androidx.compose.ui.geometry.Rect(left, top, left + drawW, top + drawH)
+                val newImageRect = Rect(left, top, left + drawW, top + drawH)
+                imageRect = newImageRect
+                canvasSize = IntSize(size.width.toInt(), size.height.toInt())
 
                 withTransform({
                     scale(scale, scale, pivot = Offset(canvasW / 2f, canvasH / 2f))
@@ -204,7 +205,62 @@ fun RemoteScreen(
     }
 }
 
-// ── Connection status badge ────────────────────────────────────────────────
+/**
+ * Converts screen touch coordinates to relative (0..1) coordinates inside the original image,
+ * taking into account letterbox, zoom (scale) and pan (offset).
+ *
+ * @param screenTap Touch position in screen coordinates.
+ * @param scale Current zoom scale (1..4).
+ * @param offset Current pan offset.
+ * @param imageRect Rectangle where the image is drawn (letterboxed, before scale/pan).
+ * @param canvasSize Size of the Canvas composable.
+ * @return Pair of (relX, relY) or (null, null) if tap is outside the visible image area.
+ */
+private fun screenToImageCoords(
+    screenTap: Offset,
+    scale: Float,
+    offset: Offset,
+    imageRect: Rect,
+    canvasSize: IntSize
+): Pair<Float?, Float?> {
+    if (imageRect == Rect.Zero) {
+        // Fallback before first frame — use full canvas
+        return Pair(
+            (screenTap.x / canvasSize.width).coerceIn(0f, 1f),
+            (screenTap.y / canvasSize.height).coerceIn(0f, 1f)
+        )
+    }
+
+    // Step 1: Reverse the translation (offset) and scaling applied to the canvas.
+    // The canvas transformation is: scale around center, then translate by offset.
+    // To map screen point back to the drawn image (before scaling/panning), we:
+    //   - Subtract offset
+    //   - Divide by scale (but pivot is center, so we need to adjust for pivot)
+    // However, because the image is also letterboxed, we need to combine.
+
+    // Better approach: The drawn image (after letterbox) is placed at imageRect.
+    // Then the whole canvas (including imageRect) is scaled around canvas center and translated.
+    // So the effective position of the image on screen = transform( imageRect ).
+    // To inverse: given screen point, we find where it lands in the coordinate system before scale/translate.
+
+    val canvasCenter = Offset(canvasSize.width / 2f, canvasSize.height / 2f)
+
+    // Inverse translation
+    val translated = screenTap - offset
+
+    // Inverse scale around canvasCenter
+    val scaled = canvasCenter + (translated - canvasCenter) / scale
+
+    // Now 'scaled' is the point in the coordinate space where the imageRect is placed (without scale/pan).
+    // Check if it falls inside imageRect
+    if (!imageRect.contains(scaled)) return Pair(null, null)
+
+    // Compute relative coordinates inside the imageRect
+    val relX = ((scaled.x - imageRect.left) / imageRect.width).coerceIn(0f, 1f)
+    val relY = ((scaled.y - imageRect.top) / imageRect.height).coerceIn(0f, 1f)
+    return Pair(relX, relY)
+}
+
 @Composable
 fun ConnStatusBadge(
     connState:   ConnState,
@@ -242,31 +298,6 @@ fun ConnStatusBadge(
     }
 }
 
-// ── Tap coordinate helper ──────────────────────────────────────────────────
-/**
- * Converts a tap position on the Canvas to relative PC coordinates (0..1).
- * Returns null if the tap was outside the image (in the letterbox bars).
- */
-private fun tapToRelative(
-    tap:       Offset,
-    canvasSize: androidx.compose.ui.unit.IntSize,
-    imageRect: androidx.compose.ui.geometry.Rect
-): Pair<Float?, Float?> {
-    if (imageRect == androidx.compose.ui.geometry.Rect.Zero) {
-        // Fallback before first frame — use full canvas
-        return Pair(
-            (tap.x / canvasSize.width).coerceIn(0f, 1f),
-            (tap.y / canvasSize.height).coerceIn(0f, 1f)
-        )
-    }
-
-    // Check if tap is inside the image rect
-    if (!imageRect.contains(tap)) return Pair(null, null)
-
-    val relX = ((tap.x - imageRect.left) / imageRect.width).coerceIn(0f, 1f)
-    val relY = ((tap.y - imageRect.top)  / imageRect.height).coerceIn(0f, 1f)
-    return Pair(relX, relY)
-}
 @Composable
 fun ShortcutBar(
     modifier:    Modifier = Modifier,
