@@ -201,8 +201,26 @@ class RemoteViewModel : ViewModel() {
 
     // ── WebSocket connection ───────────────────────────────────────────────────
 
+    // app/src/main/java/com/example/agent/RemoteViewModel.kt
+
     fun connect(wsUrl: String, jwtToken: String, deviceId: String) {
-        wsManager.connect(wsUrl, jwtToken, deviceId)
+        Log.d("WS_CONNECT", "========== CONNECT CALLED ==========")
+        Log.d("WS_CONNECT", "wsUrl: $wsUrl")
+        Log.d("WS_CONNECT", "jwtToken: ${jwtToken.take(30)}...")
+        Log.d("WS_CONNECT", "deviceId: $deviceId")
+
+        // Убеждаемся что URL правильный
+        var correctedUrl = wsUrl
+        if (!correctedUrl.startsWith("ws://") && !correctedUrl.startsWith("wss://")) {
+            correctedUrl = "ws://$correctedUrl"
+            Log.d("WS_CONNECT", "Corrected URL: $correctedUrl")
+        }
+
+        // Убираем лишние слеши
+        correctedUrl = correctedUrl.replace(Regex("(ws://|wss://)/+"), "$1")
+
+        Log.d("WS_CONNECT", "Final URL: $correctedUrl")
+        wsManager.connect(correctedUrl, jwtToken, deviceId)
     }
 
     fun disconnect() {
@@ -210,11 +228,14 @@ class RemoteViewModel : ViewModel() {
     }
 
     // ── Incoming message handler ───────────────────────────────────────────────
-
     private fun handleJsonMessage(json: JSONObject) {
-        Log.d("HANDLEJSNMSG",json.getString("type"))
+        Log.d("HANDLEJSNMSG", "Received: ${json.toString()}")
+
         try {
-            when (json.getString("type")) {
+            val type = json.getString("type")
+            Log.d("HANDLEJSNMSG", "Type: $type")
+
+            when (type) {
                 "ai_msg" -> {
                     _isAiRunning.value = true
                     addMessage(ChatMessage(
@@ -222,37 +243,97 @@ class RemoteViewModel : ViewModel() {
                         text = json.getString("text")
                     ))
                 }
+
                 "ai_action" -> {
+                    _isAiRunning.value = true
+                    val action = json.getString("action")
+                    val params = json.optJSONObject("params") ?: JSONObject()
+                    val text = json.optString("text", "▶ $action")
                     addMessage(ChatMessage(
                         role = ChatMessage.Role.ACTION,
-                        text = "${json.optString("action","")} ${json.optJSONObject("params") ?: ""}"
+                        text = text
                     ))
                 }
+
+                "execute_action" -> {
+                    // Сервер отправляет execute_action, но мы показываем как action
+                    _isAiRunning.value = true
+                    val action = json.getString("action")
+                    val params = json.optJSONObject("params") ?: JSONObject()
+                    addMessage(ChatMessage(
+                        role = ChatMessage.Role.ACTION,
+                        text = "▶ $action ${params.toString()}"
+                    ))
+                }
+
                 "ai_done" -> {
                     _isAiRunning.value = false
-                    addMessage(ChatMessage(
-                        role = ChatMessage.Role.DONE,
-                        text = "✓ ${json.optString("summary","Task complete")}"
-                    ))
-                    Log.d("ai_done","ai_done")
+                    val summary = json.optString("summary", "Task complete")
+                    val status = json.optString("status", "success")
+                    if (status == "error" || summary.lowercase().contains("failed")) {
+                        addMessage(ChatMessage(
+                            role = ChatMessage.Role.ERROR,
+                            text = "❌ $summary"
+                        ))
+                    } else {
+                        addMessage(ChatMessage(
+                            role = ChatMessage.Role.DONE,
+                            text = "✅ $summary"
+                        ))
+                    }
+                    Log.d("ai_done", "Task finished: $summary")
                 }
+
                 "agent_status" -> {
                     _agentOnline.value = json.optBoolean("online", false)
+                    Log.d("AGENT_STATUS", "Agent online: ${_agentOnline.value}")
                 }
-                "phone_connected", "phone_disconnected" -> {
-                    // These are internal signals for the desktop agent only.
-                    // Phone can safely ignore them.
+
+                "status" -> {
+                    val statusText = json.optString("text", "")
+                    if (statusText.isNotEmpty()) {
+                        addMessage(ChatMessage(
+                            role = ChatMessage.Role.ASSISTANT,
+                            text = statusText
+                        ))
+                    }
                 }
-                "error" -> {
-                    Log.d("ai_error","Error")
-                    _isAiRunning.value = false
+
+                "task_start" -> {
+                    _isAiRunning.value = true
                     addMessage(ChatMessage(
-                        role = ChatMessage.Role.ERROR,
-                        text = json.optString("text","Unknown error")
+                        role = ChatMessage.Role.ASSISTANT,
+                        text = "🤔 Thinking..."
                     ))
                 }
+
+                "error" -> {
+                    _isAiRunning.value = false
+                    val errorText = json.optString("text", "Unknown error")
+                    addMessage(ChatMessage(
+                        role = ChatMessage.Role.ERROR,
+                        text = "❌ $errorText"
+                    ))
+                    Log.e("AI_ERROR", errorText)
+                }
+
+                "phone_connected", "phone_disconnected" -> {
+                    // These are internal signals for the desktop agent only.
+                    Log.d("PHONE_STATUS", "Phone $type")
+                }
+
+                "request_screenshot" -> {
+                    // Это сообщение для агента, телефон игнорирует
+                    Log.d("SCREENSHOT", "Server requested screenshot from agent")
+                }
+
+                else -> {
+                    Log.d("HANDLEJSNMSG", "Unhandled message type: $type")
+                }
             }
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            Log.e("HANDLEJSNMSG", "Error parsing message: ${e.message}", e)
+        }
     }
 
     // ── Outgoing messages ──────────────────────────────────────────────────────
@@ -264,12 +345,15 @@ class RemoteViewModel : ViewModel() {
             put("type", "user_msg")
             put("text", text)
 
+            // Send AI settings if available
             ai?.let {
                 put("ai_provider", it.provider)
                 put("ai_key", it.apiKey)
+                Log.d("AI_SETTINGS", "Using AI provider: ${it.provider}")
             }
         }
 
+        Log.d("SEND_GOAL", "Sending: $json")
         wsManager.sendRaw(json)
         addMessage(ChatMessage(role = ChatMessage.Role.USER, text = text))
     }

@@ -51,7 +51,8 @@ import com.example.agent.CredentialStore
 import com.example.agent.RemoteViewModel
 import com.example.agent.model.ConnState
 
-const val server =  "http://10.50.56.133:3000"
+//const val server =  "http://10.50.56.187:3000"
+const val server =  "http://192.168.31.86:3000"
 //const val server =  "http://10.0.7.44:3000"
 
 @Composable
